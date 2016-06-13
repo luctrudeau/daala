@@ -1184,7 +1184,7 @@ bool TestPanel::gotoFrame() {
       wxMessageBox(_("Error: Video doesn't have that many frames"));
       restart();
       return false;
-	}
+    }
   }
   refresh();
   return toReturn;
