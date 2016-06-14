@@ -112,6 +112,42 @@ struct od_mv_grid_pt {
   unsigned ref:3;
 };
 
+void od_img_draw_line(const int x, const int y,
+ unsigned char *channel, const int channel_stride)
+{
+  int p0[2];
+  int p1[2];
+  int dx[2];
+  int step[2];
+  int steep;
+  int err;
+  int derr;
+
+  steep = abs(y) > abs(x);
+  p0[0] = 0;
+  p0[1] = 0;
+  p1[0] = x;
+  p1[1] = y;
+  dx[0] = abs(x);
+  dx[1] = abs(y);
+
+  err = 0;
+  derr = dx[1 - steep];
+  step[0] = ((p0[0] < x) << 1) - 1;
+  step[1] = ((p0[1] < y) << 1) - 1;
+
+  *channel = 1;
+  while (p0[steep] != p1[steep]) {
+    p0[steep] += step[steep];
+    err += derr;
+    if (err << 1 > dx[steep]) {
+      p0[1 - steep] += step[1 - steep];
+      err -= dx[steep];
+    }
+    *(channel + (channel_stride * p0[1] + p0[0])) = 1;
+  }
+}
+
 class DaalaDecoder {
 private:
   FILE *input;
@@ -431,6 +467,8 @@ private:
   int plane_mask;
   const wxString path;
 
+  unsigned char *mv_mask;
+
   // The decode size is the picture size or frame size.
   int getDecodeWidth() const;
   int getDecodeHeight() const;
@@ -649,6 +687,8 @@ bool TestPanel::open(const wxString &path) {
     close();
     return false;
   }
+  mv_mask = (unsigned char *)malloc(sizeof(char)*dd.getFrameWidth()
+   * dd.getFrameHeight());
   if (!nextFrame()) {
     close();
     return false;
@@ -670,6 +710,8 @@ void TestPanel::close() {
   free(dering);
   dering = NULL;
   free(mv);
+  mv = NULL;
+  free(mv_mask);
   mv = NULL;
 }
 
@@ -733,6 +775,39 @@ void TestPanel::render() {
       }
     }
     norm = 1./(1e-4+maxval);
+  }
+  if (show_motion) {
+    memset(mv_mask, 0, sizeof(char) * dd.getFrameWidth() * dd.getFrameHeight());
+    unsigned char *mv_pel = mv_mask;
+    for (int sby = 0; sby < dd.getNVMVBS() + 1; sby++) {
+      int y = sby << OD_LOG_MVBSIZE_MIN;
+      for (int sbx = 0; sbx < dd.getNHMVBS() + 1; sbx++) {
+        int x = sbx << OD_LOG_MVBSIZE_MIN;
+        if(x < getDecodeWidth() && y < getDecodeHeight()) {
+          od_mv_grid_pt cur = mv[sby * (dd.getNHMVBS()+1) + sbx];
+          int mv_x = cur.mv[0] >> OD_LOG_MVBSIZE_MIN;
+          int mv_y = cur.mv[1] >> OD_LOG_MVBSIZE_MIN;
+          int xx = x + mv_x;
+          int yy = y + mv_y;
+          if(xx < 0) {
+	    mv_x += xx;
+          }
+          else if(xx > getDecodeWidth()) {
+            mv_x += getDecodeWidth() - xx;
+          }
+          if(yy < 0) {
+            mv_y += yy;
+          }
+          else if(yy > getDecodeHeight()) {
+            mv_y += getDecodeHeight() - yy;
+          }
+          if(cur.valid) {
+            od_img_draw_line(mv_x, mv_y, mv_pel+(y * dd.getFrameWidth() + x),
+             dd.getFrameWidth());
+          }
+        }
+      }
+    }
   }
 
   for (int j = 0; j < getDecodeHeight(); j++) {
@@ -837,21 +912,27 @@ void TestPanel::render() {
         }
       }
       if (show_motion) {
-        int mask = ~(OD_MVBSIZE_MIN - 1);
-        int b = OD_LOG_MVBSIZE_MIN;
-        while (i == (i & mask) || j == (j & mask)) {
-          mask <<= 1;
-          int mid_step = 1 << b++;
-          int row = ((i & mask) + mid_step) >> OD_LOG_MVBSIZE_MIN;
-          int col = ((j & mask) + mid_step) >> OD_LOG_MVBSIZE_MIN;
-          int index = col * (dd.getNHMVBS() + 1) + row;
-          if (mv[index].valid) {
-            yval = block_edge_luma(yval);
-            cbval = 255;
-            break;
-          }
-          if (b > OD_LOG_MVBSIZE_MAX) {
-            break;
+        if (mv_mask[j * dd.getFrameWidth() + i] == 1) {
+          cbval = 0;
+          crval = 255;
+          yval = 0;
+        } else {
+          int mask = ~(OD_MVBSIZE_MIN - 1);
+          int b = OD_LOG_MVBSIZE_MIN;
+          while (i == (i & mask) || j == (j & mask)) {
+            mask <<= 1;
+            int mid_step = 1 << b++;
+            int row = ((i & mask) + mid_step) >> OD_LOG_MVBSIZE_MIN;
+            int col = ((j & mask) + mid_step) >> OD_LOG_MVBSIZE_MIN;
+            int index = col * (dd.getNHMVBS() + 1) + row;
+            if (mv[index].valid) {
+              yval = block_edge_luma(yval);
+              cbval = 255;
+              break;
+            }
+            if (b > OD_LOG_MVBSIZE_MAX) {
+              break;
+            }
           }
         }
       }
